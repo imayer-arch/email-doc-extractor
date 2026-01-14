@@ -1,0 +1,63 @@
+import dotenv from 'dotenv';
+import path from 'path';
+
+// Load environment variables
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+
+export const config = {
+  // Database
+  database: {
+    url: process.env.DATABASE_URL || '',
+  },
+
+  // AWS Textract & S3
+  aws: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+    region: process.env.AWS_REGION || 'us-east-2',
+    s3Bucket: process.env.AWS_S3_BUCKET || '',
+  },
+
+  // Gmail OAuth2
+  gmail: {
+    clientId: process.env.GMAIL_CLIENT_ID || '',
+    clientSecret: process.env.GMAIL_CLIENT_SECRET || '',
+    redirectUri: process.env.GMAIL_REDIRECT_URI || 'http://localhost:3000/oauth/callback',
+    refreshToken: process.env.GMAIL_REFRESH_TOKEN || '',
+    userEmail: process.env.GMAIL_USER_EMAIL || '',
+  },
+
+  // SMTP for notifications
+  smtp: {
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    notificationEmail: process.env.NOTIFICATION_EMAIL || '',
+  },
+
+  // Agent settings
+  agent: {
+    pollingIntervalMs: parseInt(process.env.POLLING_INTERVAL_MS || '60000', 10),
+    googleApiKey: process.env.GOOGLE_API_KEY || '',
+  },
+} as const;
+
+// Validate required configuration
+export function validateConfig(): void {
+  const required = [
+    ['DATABASE_URL', config.database.url],
+    ['AWS_ACCESS_KEY_ID', config.aws.accessKeyId],
+    ['AWS_SECRET_ACCESS_KEY', config.aws.secretAccessKey],
+    ['GMAIL_CLIENT_ID', config.gmail.clientId],
+    ['GMAIL_CLIENT_SECRET', config.gmail.clientSecret],
+    ['GMAIL_REFRESH_TOKEN', config.gmail.refreshToken],
+    ['GOOGLE_API_KEY', config.agent.googleApiKey],
+  ];
+
+  const missing = required.filter(([_, value]) => !value).map(([name]) => name);
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+}
