@@ -243,13 +243,24 @@ export async function runAgent(task: string): Promise<string> {
       },
     });
 
-    // Collect all responses
+    // Collect all responses and log tool calls
     let finalResponse = '';
     for await (const event of events) {
+      // Log all events for debugging
+      console.log(`[Agent Event] Author: ${event.author}, Type: ${event.content?.role || 'unknown'}`);
+      
       if (event.content?.parts) {
         for (const part of event.content.parts) {
           if ('text' in part && part.text) {
             finalResponse += part.text;
+          }
+          // Log function calls
+          if ('functionCall' in part) {
+            console.log(`[Tool Call] ${(part as any).functionCall.name}(${JSON.stringify((part as any).functionCall.args).substring(0, 100)}...)`);
+          }
+          // Log function responses
+          if ('functionResponse' in part) {
+            console.log(`[Tool Response] ${(part as any).functionResponse.name} completed`);
           }
         }
       }

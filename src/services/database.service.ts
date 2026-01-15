@@ -141,7 +141,7 @@ export class DatabaseService {
   /**
    * Get extraction statistics
    */
-  async getStats(): Promise<{
+  async getExtractionStats(): Promise<{
     total: number;
     completed: number;
     errors: number;
@@ -163,6 +163,42 @@ export class DatabaseService {
       errors,
       avgConfidence: avgResult._avg.confidence || 0,
     };
+  }
+
+  /**
+   * Get recent documents
+   */
+  async getRecentDocuments(limit: number = 50, status?: string): Promise<ExtractedDocument[]> {
+    const where = status && status !== 'all' ? { status } : {};
+    
+    return this.prisma.extractedDocument.findMany({
+      where,
+      orderBy: { extractedAt: 'desc' },
+      take: limit,
+    });
+  }
+
+  /**
+   * Delete a single document by ID
+   */
+  async deleteDocument(id: string): Promise<void> {
+    await this.prisma.extractedDocument.delete({
+      where: { id },
+    });
+    console.log(`Document ${id} deleted`);
+  }
+
+  /**
+   * Delete multiple documents by IDs
+   */
+  async deleteDocuments(ids: string[]): Promise<{ count: number }> {
+    const result = await this.prisma.extractedDocument.deleteMany({
+      where: {
+        id: { in: ids },
+      },
+    });
+    console.log(`${result.count} documents deleted`);
+    return result;
   }
 
   /**

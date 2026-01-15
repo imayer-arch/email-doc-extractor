@@ -1,3 +1,4 @@
+import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import nodemailer from 'nodemailer';
 import { config } from '../config';
 import { ExtractionResult } from './textract.service';
@@ -11,18 +12,31 @@ export interface NotificationData {
 }
 
 export class EmailNotificationService {
-  private transporter: nodemailer.Transporter;
+  private sesClient: SESClient | null = null;
+  private smtpTransporter: nodemailer.Transporter | null = null;
 
   constructor() {
-    this.transporter = nodemailer.createTransport({
-      host: config.smtp.host,
-      port: config.smtp.port,
-      secure: config.smtp.port === 465,
-      auth: {
-        user: config.smtp.user,
-        pass: config.smtp.pass,
-      },
-    });
+    if (config.email.provider === 'ses') {
+      this.sesClient = new SESClient({
+        region: config.email.ses.region,
+        credentials: {
+          accessKeyId: config.aws.accessKeyId,
+          secretAccessKey: config.aws.secretAccessKey,
+        },
+      });
+      console.log('Email service initialized with AWS SES');
+    } else {
+      this.smtpTransporter = nodemailer.createTransport({
+        host: config.email.smtp.host,
+        port: config.email.smtp.port,
+        secure: config.email.smtp.port === 465,
+        auth: {
+          user: config.email.smtp.user,
+          pass: config.email.smtp.pass,
+        },
+      });
+      console.log('Email service initialized with SMTP');
+    }
   }
 
   /**
@@ -33,19 +47,66 @@ export class EmailNotificationService {
     const textContent = this.generateTextReport(data);
 
     try {
-      await this.transporter.sendMail({
-        from: config.smtp.user,
-        to: config.smtp.notificationEmail,
-        subject: `📄 Documento Extraído: ${data.fileName}`,
-        text: textContent,
-        html: htmlContent,
-      });
+      if (config.email.provider === 'ses' && this.sesClient) {
+        await this.sendViaSES(data.fileName, htmlContent, textContent);
+      } else if (this.smtpTransporter) {
+        await this.sendViaSMTP(data.fileName, htmlContent, textContent);
+      } else {
+        throw new Error('No email provider configured');
+      }
 
       console.log(`Notification sent for document: ${data.fileName}`);
     } catch (error) {
       console.error('Error sending notification email:', error);
       throw error;
     }
+  }
+
+  /**
+   * Send email via AWS SES
+   */
+  private async sendViaSES(fileName: string, htmlContent: string, textContent: string): Promise<void> {
+    if (!this.sesClient) throw new Error('SES client not initialized');
+
+    const command = new SendEmailCommand({
+      Source: config.email.fromEmail,
+      Destination: {
+        ToAddresses: [config.email.notificationEmail],
+      },
+      Message: {
+        Subject: {
+          Data: `📄 Documento Extraído: ${fileName}`,
+          Charset: 'UTF-8',
+        },
+        Body: {
+          Text: {
+            Data: textContent,
+            Charset: 'UTF-8',
+          },
+          Html: {
+            Data: htmlContent,
+            Charset: 'UTF-8',
+          },
+        },
+      },
+    });
+
+    await this.sesClient.send(command);
+  }
+
+  /**
+   * Send email via SMTP (legacy)
+   */
+  private async sendViaSMTP(fileName: string, htmlContent: string, textContent: string): Promise<void> {
+    if (!this.smtpTransporter) throw new Error('SMTP transporter not initialized');
+
+    await this.smtpTransporter.sendMail({
+      from: config.email.fromEmail,
+      to: config.email.notificationEmail,
+      subject: `📄 Documento Extraído: ${fileName}`,
+      text: textContent,
+      html: htmlContent,
+    });
   }
 
   /**
@@ -194,14 +255,21 @@ Email Original:
   }
 
   /**
-   * Verify SMTP connection
+   * Verify email connection/configuration
    */
   async verifyConnection(): Promise<boolean> {
     try {
-      await this.transporter.verify();
-      return true;
+      if (config.email.provider === 'ses' && this.sesClient) {
+        // For SES, we can try to get the send quota to verify credentials
+        console.log('AWS SES configured. Make sure your email addresses are verified in SES console.');
+        return true;
+      } else if (this.smtpTransporter) {
+        await this.smtpTransporter.verify();
+        return true;
+      }
+      return false;
     } catch (error) {
-      console.error('SMTP connection verification failed:', error);
+      console.error('Email connection verification failed:', error);
       return false;
     }
   }

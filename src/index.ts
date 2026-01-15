@@ -1,4 +1,4 @@
-import { config, validateConfig } from './config';
+import { config, validateConfig, setupAdkEnvironment } from './config';
 import { createDocumentExtractionAgent, runAgent, processEmailsAutomatically } from './agent';
 import { getDatabaseService } from './services/database.service';
 
@@ -14,6 +14,7 @@ async function main(): Promise<void> {
   // Validate configuration
   try {
     validateConfig();
+    setupAdkEnvironment(); // Setup env vars for ADK
     console.log('✓ Configuration validated successfully\n');
   } catch (error) {
     console.error('✗ Configuration error:', error instanceof Error ? error.message : error);
