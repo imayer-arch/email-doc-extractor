@@ -1,0 +1,38 @@
+# Prometheus Configuration
+# Scrapes metrics from the email-doc-extractor application
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alerting configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Rule files (optional)
+rule_files: []
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Email Document Extractor Backend (API Server)
+  # The app exposes metrics on port 9464 (default Prometheus exporter port)
+  - job_name: 'email-doc-extractor'
+    static_configs:
+      - targets: ['host.docker.internal:9464']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Email Document Extractor Worker
+  # Worker exposes metrics on port 9465 for processing metrics
+  - job_name: 'email-doc-extractor-worker'
+    static_configs:
+      - targets: ['host.docker.internal:9465']
+    metrics_path: '/metrics'
+    scrape_interval: 10s

@@ -8,8 +8,17 @@ import { GmailService } from './gmail.service';
 import { getTextractService } from './textract.service';
 import { getDatabaseService } from './database.service';
 import { GmailNotification } from './gmail-watch.service';
+import { loggers, logError, logDuration } from '../lib/logger';
+import {
+  emailsProcessedTotal,
+  documentsExtractedTotal,
+  emailsSkippedTotal,
+  duplicatesPreventedTotal,
+  processingErrorsTotal,
+} from '../lib/metrics';
 
 const prisma = new PrismaClient();
+const log = loggers.emailProcessor;
 
 // In-memory lock to prevent parallel processing of the same email
 const processingEmails = new Set<string>();
@@ -41,12 +50,13 @@ export class EmailProcessorService {
    */
   async processNewEmails(notification: GmailNotification): Promise<ProcessingResult> {
     const { emailAddress, historyId } = notification;
+    const startTime = Date.now();
     
-    console.log(`\n========================================`);
-    console.log(`[EmailProcessor] Processing notification`);
-    console.log(`  Email: ${emailAddress}`);
-    console.log(`  HistoryId: ${historyId}`);
-    console.log(`========================================`);
+    log.info({
+      action: 'process_start',
+      email: emailAddress,
+      historyId,
+    }, `Processing notification for ${emailAddress}`);
 
     // Find user by email
     const user = await prisma.user.findUnique({
@@ -136,7 +146,8 @@ export class EmailProcessorService {
         
         // Try to acquire lock - if already processing, skip
         if (!acquireLock(messageId)) {
-          console.log(`  [${messageId}] SKIPPED - already being processed by another request`);
+          log.debug({ emailId: messageId, action: 'lock_failed' }, 'Skipped - already being processed');
+          duplicatesPreventedTotal.add(1);
           continue;
         }
         
@@ -147,12 +158,18 @@ export class EmailProcessorService {
           });
           
           if (alreadyProcessed) {
-            console.log(`  [${messageId}] SKIPPED - already in ProcessedEmail table`);
+            log.debug({ emailId: messageId, action: 'already_processed' }, 'Skipped - already in DB');
+            emailsSkippedTotal.add(1);
             releaseLock(messageId);
             continue;
           }
           
-          console.log(`  [${messageId}] Processing: ${email.subject} (${email.attachments.length} attachments)`);
+          log.info({
+            emailId: messageId,
+            subject: email.subject,
+            attachmentCount: email.attachments.length,
+            action: 'processing_start',
+          }, `Processing: ${email.subject}`);
 
           // Mark as processed IMMEDIATELY
           await prisma.processedEmail.create({
@@ -160,6 +177,7 @@ export class EmailProcessorService {
           });
           
           result.messagesProcessed++;
+          emailsProcessedTotal.add(1);
 
           // Process each attachment
           for (const attachment of email.attachments) {
@@ -186,10 +204,12 @@ export class EmailProcessorService {
               });
 
               result.documentsExtracted++;
-              console.log(`    Done: ${attachment.filename}`);
+              documentsExtractedTotal.add(1);
+              log.info({ emailId: messageId, fileName: attachment.filename, action: 'document_extracted' }, `Extracted: ${attachment.filename}`);
             } catch (attachmentError) {
               const errorMsg = `Error processing ${attachment.filename}: ${attachmentError instanceof Error ? attachmentError.message : 'Unknown error'}`;
-              console.error(`    ${errorMsg}`);
+              logError(log, attachmentError, { emailId: messageId, fileName: attachment.filename });
+              processingErrorsTotal.add(1, { type: 'attachment' });
               result.errors.push(errorMsg);
             }
           }

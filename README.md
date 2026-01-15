@@ -29,19 +29,33 @@ Agente de IA que monitorea Gmail, extrae datos de documentos adjuntos usando AWS
 │   :3001         │     │   :3000         │     │                 │
 └─────────────────┘     └────────┬────────┘     └─────────────────┘
                                 │
-                   ┌────────────┼────────────┐
-                   ▼            ▼            ▼
-             ┌──────────┐ ┌──────────┐ ┌──────────┐
-             │ Gmail    │ │ AWS S3   │ │ Textract │
-             │ API      │ │          │ │          │
-             └──────────┘ └──────────┘ └──────────┘
-                   │
-                   ▼
-             ┌──────────┐     ┌──────────┐
-             │ Pub/Sub  │────▶│ Webhook  │  (Push notifications)
-             │ (GCP)    │     │ /api/... │
-             └──────────┘     └──────────┘
+           ┌────────────────────┼────────────────────┐
+           ▼                    ▼                    ▼
+     ┌──────────┐         ┌──────────┐         ┌──────────┐
+     │ Pub/Sub  │────────▶│  Redis   │◀────────│  Worker  │
+     │ (GCP)    │         │ (BullMQ) │         │          │
+     └──────────┘         └──────────┘         └────┬─────┘
+                                                    │
+                          ┌─────────────────────────┼─────────────────────────┐
+                          ▼                         ▼                         ▼
+                    ┌──────────┐              ┌──────────┐              ┌──────────┐
+                    │ Gmail    │              │ AWS S3   │              │ Textract │
+                    │ API      │              │          │              │          │
+                    └──────────┘              └──────────┘              └──────────┘
 ```
+
+### Sistema de Colas (BullMQ + Redis)
+
+El procesamiento de emails usa un sistema de colas para mejor escalabilidad:
+
+1. **Webhook** recibe notificación de Pub/Sub → encola job en Redis
+2. **Email Worker** procesa el job → obtiene emails de Gmail → encola attachments
+3. **Attachment Worker** procesa cada adjunto → Textract → guarda en DB
+
+Esto permite:
+- Procesamiento paralelo de múltiples adjuntos
+- Reintentos automáticos en caso de fallo
+- Monitoreo de colas en Bull Board (`/admin/queues`)
 
 ### Procesamiento Automático (Gmail Push)
 
@@ -141,11 +155,26 @@ npm run server
 # Corre en http://localhost:3000
 ```
 
-### Terminal 2 - Frontend (Next.js)
+### Terminal 2 - Worker (Procesamiento de colas)
+```bash
+npm run worker
+# Procesa emails y attachments en background
+# Expone métricas en http://localhost:9465/metrics
+```
+
+### Terminal 3 - Frontend (Next.js)
 ```bash
 cd frontend
 npm run dev
 # Corre en http://localhost:3001
+```
+
+### Terminal 4 - Observability Stack (opcional)
+```bash
+docker-compose -f docker-compose.observability.yml up -d
+# Grafana: http://localhost:3002
+# Prometheus: http://localhost:9090
+# Jaeger: http://localhost:16686
 ```
 
 ## Scripts Disponibles
@@ -154,6 +183,9 @@ npm run dev
 ```bash
 npm run dev          # Ejecutar agente ADK (modo desarrollo)
 npm run server       # Iniciar servidor Express API
+npm run worker       # Iniciar worker de procesamiento (BullMQ)
+npm run worker:dev   # Worker con auto-reload
+npm run server:sync  # Server sin colas (procesamiento directo)
 npm run build        # Compilar TypeScript
 npm run process      # Procesar emails manualmente
 npm run auth         # Obtener refresh token de Gmail

@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
+// ScrollArea removed - using native overflow-y-auto for better compatibility
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Send,
@@ -140,8 +140,8 @@ export default function ChatPage() {
       </motion.div>
 
       {/* Chat Area */}
-      <Card className="flex-1 bg-slate-900/50 backdrop-blur-xl border-slate-800 flex flex-col overflow-hidden">
-        <ScrollArea className="flex-1 p-6" ref={scrollRef}>
+      <Card className="flex-1 bg-slate-900/50 backdrop-blur-xl border-slate-800 flex flex-col overflow-hidden min-h-0">
+        <div className="flex-1 overflow-y-auto p-6" ref={scrollRef}>
           {messages.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -218,7 +218,7 @@ export default function ChatPage() {
               <div ref={messagesEndRef} />
             </div>
           )}
-        </ScrollArea>
+        </div>
 
         {/* Input Area */}
         <CardContent className="p-4 border-t border-slate-800">

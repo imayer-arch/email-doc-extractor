@@ -14,15 +14,53 @@ import { getGmailWatchService, GmailNotification } from './services/gmail-watch.
 import { getEmailProcessorService } from './services/email-processor.service';
 import { config } from './config';
 import { encrypt, decrypt } from './utils/crypto';
+import { loggers, logDuration, logError } from './lib/logger';
+import { requestIdMiddleware, httpLogger, errorLogger } from './middleware/requestLogger';
+import { metricsMiddleware } from './middleware/metrics';
+import { startMetricsServer, pubsubNotificationsTotal, webhookDuration, recordDuration } from './lib/metrics';
+
+// Queue imports
+import { createBullBoard } from '@bull-board/api';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { ExpressAdapter } from '@bull-board/express';
+import { 
+  emailQueue, 
+  attachmentQueue, 
+  enqueueEmailJob, 
+  getQueueStats,
+  closeQueues,
+} from './queues';
 
 const prisma = new PrismaClient();
+const log = loggers.server;
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 3000;
 
+// Queue mode flag - when true, webhooks enqueue instead of processing directly
+const USE_QUEUE = process.env.USE_QUEUE !== 'false'; // Default to true
+
+// Bull Board setup (queue monitoring dashboard)
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath('/admin/queues');
+
+createBullBoard({
+  queues: [
+    new BullMQAdapter(emailQueue),
+    new BullMQAdapter(attachmentQueue),
+  ],
+  serverAdapter,
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(requestIdMiddleware);
+app.use(httpLogger);
+app.use(metricsMiddleware);
+
+// Mount Bull Board dashboard
+app.use('/admin/queues', serverAdapter.getRouter());
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -483,50 +521,97 @@ app.post('/api/auth/gmail/disconnect', async (req, res) => {
 /**
  * Webhook endpoint for Gmail Pub/Sub notifications
  * This is called by Google Cloud Pub/Sub when a new email arrives
+ * 
+ * When USE_QUEUE=true (default): Enqueues job and responds immediately (<100ms)
+ * When USE_QUEUE=false: Processes directly (legacy behavior)
  */
 app.post('/api/webhook/gmail', async (req, res) => {
-  console.log('\n>>> WEBHOOK HIT <<<');
+  const webhookLog = loggers.webhook;
   const startTime = Date.now();
   
+  // Record metric
+  pubsubNotificationsTotal.add(1);
+  
+  webhookLog.info({ action: 'webhook_received', useQueue: USE_QUEUE }, 'Gmail webhook received');
+  
   try {
-    // Respond quickly - Pub/Sub requires response within 10 seconds
-    // We acknowledge receipt and process async
-    res.status(200).send('OK');
-    
     // Decode Pub/Sub message
     const message = req.body.message;
     if (!message?.data) {
-      console.log('[Webhook] No message data received');
+      webhookLog.warn({ action: 'webhook_empty' }, 'No message data received');
+      res.status(200).send('OK');
       return;
     }
     
     // Decode base64 data
     const dataStr = Buffer.from(message.data, 'base64').toString('utf-8');
-    console.log('[Webhook] Raw data:', dataStr);
     const notification: GmailNotification = JSON.parse(dataStr);
     
-    console.log('\n========================================');
-    console.log('  Gmail Push Notification Received');
-    console.log('========================================');
-    console.log(`  Email: ${notification.emailAddress}`);
-    console.log(`  HistoryId: ${notification.historyId}`);
-    console.log(`  MessageId: ${message.messageId || 'N/A'}`);
-    console.log('========================================\n');
+    webhookLog.info({
+      action: 'notification_parsed',
+      email: notification.emailAddress,
+      historyId: notification.historyId,
+      messageId: message.messageId || 'N/A',
+    }, `Push notification for ${notification.emailAddress}`);
     
-    // Process new emails
-    console.log('[Webhook] Starting email processing...');
-    const processor = getEmailProcessorService();
-    const result = await processor.processNewEmails(notification);
-    console.log('[Webhook] Processing result:', JSON.stringify(result, null, 2));
-    
-    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`[Webhook] Completed in ${duration}s`);
-    console.log(`  Messages: ${result.messagesProcessed}`);
-    console.log(`  Documents: ${result.documentsExtracted}`);
-    console.log(`  Errors: ${result.errors.length}`);
+    if (USE_QUEUE) {
+      // ===== QUEUE MODE: Enqueue and respond immediately =====
+      const jobId = await enqueueEmailJob({
+        emailAddress: notification.emailAddress,
+        historyId: String(notification.historyId),
+        receivedAt: new Date().toISOString(),
+      });
+      
+      // Respond immediately (Pub/Sub requires response within 10 seconds)
+      res.status(200).json({ 
+        status: 'queued', 
+        jobId,
+        mode: 'async',
+      });
+      
+      const duration = Date.now() - startTime;
+      webhookLog.info({
+        action: 'webhook_queued',
+        email: notification.emailAddress,
+        jobId,
+        duration,
+      }, `Job enqueued in ${duration}ms`);
+      
+      recordDuration(webhookDuration, startTime, { status: 'queued' });
+      
+    } else {
+      // ===== DIRECT MODE: Process immediately (legacy) =====
+      res.status(200).send('OK');
+      
+      const processor = getEmailProcessorService();
+      const result = await processor.processNewEmails(notification);
+      
+      recordDuration(webhookDuration, startTime, {
+        status: result.errors.length > 0 ? 'partial' : 'success',
+      });
+      
+      const duration = Date.now() - startTime;
+      webhookLog.info({
+        action: 'webhook_completed',
+        email: notification.emailAddress,
+        messagesProcessed: result.messagesProcessed,
+        documentsExtracted: result.documentsExtracted,
+        errorCount: result.errors.length,
+        duration,
+      }, `Webhook completed: ${result.messagesProcessed} messages, ${result.documentsExtracted} docs in ${duration}ms`);
+      
+      if (result.errors.length > 0) {
+        webhookLog.warn({ action: 'webhook_errors', errors: result.errors }, `Webhook had ${result.errors.length} errors`);
+      }
+    }
     
   } catch (error) {
-    console.error('[Webhook] Error processing notification:', error);
+    recordDuration(webhookDuration, startTime, { status: 'error' });
+    logError(webhookLog, error, { action: 'webhook_error' });
+    // Still respond 200 to prevent Pub/Sub retries for parsing errors
+    if (!res.headersSent) {
+      res.status(200).send('OK');
+    }
   }
 });
 
@@ -653,6 +738,27 @@ app.get('/api/gmail/watch/list', async (req, res) => {
   }
 });
 
+// =============================================================================
+// Queue Management Endpoints
+// =============================================================================
+
+/**
+ * Get queue statistics
+ */
+app.get('/api/queues/stats', async (req, res) => {
+  try {
+    const stats = await getQueueStats();
+    res.json({
+      mode: USE_QUEUE ? 'queue' : 'direct',
+      queues: stats,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 /**
  * =============================================================================
  * TODO: ENDPOINT DE CHAT CON ADK - ACTIVAR CUANDO HAYA CUOTA DE GEMINI
@@ -746,14 +852,41 @@ function startWatchRenewalJob(): void {
   }, 5000); // Wait 5 seconds after startup
 }
 
+// Error handler middleware (must be last)
+app.use(errorLogger);
+
+// Graceful shutdown handler
+async function gracefulShutdown(signal: string) {
+  log.info({ signal }, 'Shutting down server...');
+  
+  // Close queue connections
+  await closeQueues();
+  
+  log.info('Server shut down gracefully');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // Start server
 app.listen(PORT, () => {
+  log.info({
+    action: 'server_started',
+    port: PORT,
+    gmail: config.gmail.userEmail,
+    pubsub: config.pubsub.topicPath || 'Not configured',
+    queueMode: USE_QUEUE,
+  }, `Server running on http://localhost:${PORT}`);
+  
+  // Also log to console for visibility during development
   console.log('========================================');
   console.log('  Email Document Extractor - Backend');
   console.log('========================================');
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📧 Gmail: ${config.gmail.userEmail}`);
   console.log(`☁️ Pub/Sub: ${config.pubsub.topicPath || 'Not configured'}`);
+  console.log(`📋 Queue Mode: ${USE_QUEUE ? 'ENABLED (async)' : 'DISABLED (sync)'}`);
   console.log('');
   console.log('Core Endpoints:');
   console.log(`  GET  /api/health       - Health check`);
@@ -768,8 +901,15 @@ app.listen(PORT, () => {
   console.log(`  POST /api/gmail/watch/stop     - Stop watching`);
   console.log(`  GET  /api/gmail/watch/status   - Get watch status`);
   console.log(`  POST /api/gmail/watch/renew-all - Renew all watches`);
+  console.log('');
+  console.log('Queue Management:');
+  console.log(`  GET  /api/queues/stats     - Queue statistics`);
+  console.log(`  🖥️  /admin/queues          - Bull Board Dashboard`);
   console.log('========================================\n');
   
   // Start the automatic watch renewal job
   startWatchRenewalJob();
+  
+  // Start Prometheus metrics endpoint
+  startMetricsServer();
 });

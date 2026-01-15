@@ -1,0 +1,119 @@
+# Docker Compose for Observability Stack
+# Run with: docker-compose -f docker-compose.observability.yml up -d
+#
+# Services:
+# - Prometheus: Metrics collection (http://localhost:9090)
+# - Grafana: Dashboards and alerting (http://localhost:3002)
+# - Jaeger: Distributed tracing (http://localhost:16686)
+# - Loki: Log aggregation (http://localhost:3100)
+
+version: '3.8'
+
+services:
+  # =============================================================================
+  # Prometheus - Metrics Collection
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: observability-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # =============================================================================
+  # Grafana - Dashboards & Alerting
+  # =============================================================================
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: observability-grafana
+    ports:
+      - "3002:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+    restart: unless-stopped
+
+  # =============================================================================
+  # Jaeger - Distributed Tracing
+  # =============================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: observability-jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4318:4318"    # OTLP HTTP
+      - "4317:4317"    # OTLP gRPC
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    restart: unless-stopped
+
+  # =============================================================================
+  # Loki - Log Aggregation
+  # =============================================================================
+  loki:
+    image: grafana/loki:2.9.2
+    container_name: observability-loki
+    user: "0"  # Run as root to avoid permission issues
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  # =============================================================================
+  # Promtail - Log Shipping (optional, for Docker logs)
+  # =============================================================================
+  promtail:
+    image: grafana/promtail:2.9.2
+    container_name: observability-promtail
+    volumes:
+      - ./observability/promtail/promtail-config.yml:/etc/promtail/config.yml
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/config.yml
+    restart: unless-stopped
+
+  # =============================================================================
+  # Redis - Job Queue Backend
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: observability-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  redis_data:
+
+networks:
+  default:
+    name: observability-network
