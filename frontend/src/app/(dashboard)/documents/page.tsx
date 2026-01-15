@@ -21,6 +21,8 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
+  DialogFooter,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -65,6 +67,7 @@ export default function DocumentsPage() {
   const [selectedDoc, setSelectedDoc] = useState<ExtractedDocument | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const { data: documents, isLoading } = useDocuments();
   const { mutate: deleteDocuments, isPending: isDeleting } = useDeleteDocuments();
@@ -101,14 +104,16 @@ export default function DocumentsPage() {
 
   const handleDelete = () => {
     if (selectedIds.size === 0) return;
-    
-    if (confirm(`¿Estás seguro de eliminar ${selectedIds.size} documento(s)?`)) {
-      deleteDocuments(Array.from(selectedIds), {
-        onSuccess: () => {
-          setSelectedIds(new Set());
-        },
-      });
-    }
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = () => {
+    deleteDocuments(Array.from(selectedIds), {
+      onSuccess: () => {
+        setSelectedIds(new Set());
+        setShowDeleteConfirm(false);
+      },
+    });
   };
 
   const isAllSelected = filteredDocs.length > 0 && selectedIds.size === filteredDocs.length;
@@ -470,6 +475,53 @@ export default function DocumentsPage() {
               </TabsContent>
             </ScrollArea>
           </Tabs>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Modal */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent className="max-w-md bg-slate-900 border-slate-800 text-white">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-3 text-white">
+              <div className="p-2 rounded-lg bg-red-500/20">
+                <Trash2 className="h-5 w-5 text-red-400" />
+              </div>
+              Confirmar eliminación
+            </DialogTitle>
+            <DialogDescription className="text-slate-400 pt-2">
+              ¿Estás seguro de que deseas eliminar{" "}
+              <span className="text-white font-semibold">{selectedIds.size} documento(s)</span>?
+              <br />
+              <span className="text-red-400 text-sm">Esta acción no se puede deshacer.</span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-3 pt-4">
+            <Button
+              variant="outline"
+              onClick={() => setShowDeleteConfirm(false)}
+              disabled={isDeleting}
+              className="flex-1 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white"
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={confirmDelete}
+              disabled={isDeleting}
+              className="flex-1 bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30"
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Eliminando...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Eliminar
+                </>
+              )}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { StatsCard } from "@/components/dashboard/stats-card";
 import { RecentDocuments } from "@/components/dashboard/recent-documents";
@@ -7,6 +8,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableRow,
+} from "@/components/ui/table";
 import {
   FileText,
   CheckCircle,
@@ -16,12 +31,15 @@ import {
   RefreshCw,
   Sparkles,
   Mail,
+  KeyRound,
+  Table as TableIcon,
+  FileCode,
 } from "lucide-react";
 import { useDocuments, useStats, useTriggerProcess } from "@/lib/api";
-import { useRouter } from "next/navigation";
+import { ExtractedDocument } from "@/lib/store";
 
 export default function DashboardPage() {
-  const router = useRouter();
+  const [selectedDoc, setSelectedDoc] = useState<ExtractedDocument | null>(null);
   const { data: documents, isLoading: docsLoading } = useDocuments();
   const { data: stats, isLoading: statsLoading } = useStats();
   const { mutate: triggerProcess, isPending: isProcessing } = useTriggerProcess();
@@ -131,7 +149,7 @@ export default function DashboardPage() {
           ) : (
             <RecentDocuments 
               documents={documents?.slice(0, 5) || []} 
-              onSelect={(doc) => router.push(`/documents?id=${doc.id}`)}
+              onSelect={(doc) => setSelectedDoc(doc)}
             />
           )}
         </div>
@@ -207,6 +225,152 @@ export default function DashboardPage() {
           </motion.div>
         </div>
       </div>
+
+      {/* Document Detail Modal */}
+      <Dialog open={!!selectedDoc} onOpenChange={() => setSelectedDoc(null)}>
+        <DialogContent className="max-w-[95vw] w-[95vw] max-h-[90vh] h-[90vh] bg-slate-900 border-slate-800 text-white overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-cyan-500/20">
+                <FileText className="h-5 w-5 text-cyan-400" />
+              </div>
+              <div>
+                <span className="text-white">{selectedDoc?.fileName}</span>
+                <p className="text-sm text-slate-400 font-normal mt-1">
+                  {selectedDoc?.emailSubject}
+                </p>
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+
+          <Tabs defaultValue="data" className="mt-4">
+            <TabsList className="bg-slate-800/50 border border-slate-700">
+              <TabsTrigger
+                value="data"
+                className="data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-400"
+              >
+                <KeyRound className="h-4 w-4 mr-2" />
+                Datos Extraídos
+              </TabsTrigger>
+              <TabsTrigger
+                value="tables"
+                className="data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-400"
+              >
+                <TableIcon className="h-4 w-4 mr-2" />
+                Tablas
+              </TabsTrigger>
+              <TabsTrigger
+                value="raw"
+                className="data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-400"
+              >
+                <FileCode className="h-4 w-4 mr-2" />
+                Texto Raw
+              </TabsTrigger>
+            </TabsList>
+
+            <ScrollArea className="h-[calc(90vh-180px)] mt-4">
+              <TabsContent value="data" className="mt-0">
+                <div className="space-y-3">
+                  {(selectedDoc?.structuredData as any)?.keyValuePairs?.length > 0 ||
+                  (Array.isArray(selectedDoc?.structuredData) && selectedDoc?.structuredData?.length > 0) ? (
+                    ((selectedDoc?.structuredData as any)?.keyValuePairs || selectedDoc?.structuredData || []).map(
+                      (kv: any, i: number) => (
+                        <div
+                          key={i}
+                          className="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 border border-slate-700"
+                        >
+                          <div>
+                            <span className="text-slate-400 text-sm">
+                              {kv.key}
+                            </span>
+                            <p className="text-white font-medium mt-1">
+                              {kv.value}
+                            </p>
+                          </div>
+                          <Badge
+                            variant="outline"
+                            className={
+                              kv.confidence >= 90
+                                ? "bg-green-500/20 text-green-400 border-green-500/30"
+                                : kv.confidence >= 70
+                                ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                                : "bg-red-500/20 text-red-400 border-red-500/30"
+                            }
+                          >
+                            {kv.confidence?.toFixed(0) || 0}%
+                          </Badge>
+                        </div>
+                      )
+                    )
+                  ) : (
+                    <p className="text-slate-500 text-center py-8">
+                      No hay datos estructurados disponibles
+                    </p>
+                  )}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="tables" className="mt-0 space-y-6 pr-4">
+                {(selectedDoc?.tablesData as any[])?.length > 0 ? (
+                  (selectedDoc?.tablesData as any[])?.map(
+                    (table: any, tableIndex: number) => (
+                      <div key={tableIndex} className="mb-8">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-base font-semibold text-white">
+                            Tabla {tableIndex + 1}
+                          </h4>
+                          <Badge variant="outline" className="bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                            {table.confidence?.toFixed(0)}% confianza
+                          </Badge>
+                        </div>
+                        <div className="rounded-lg border border-slate-700 overflow-auto max-w-full">
+                          <table className="w-full border-collapse">
+                            <tbody>
+                              {table.rows?.map((row: string[], rowIndex: number) => (
+                                <tr
+                                  key={rowIndex}
+                                  className={
+                                    rowIndex === 0
+                                      ? "bg-slate-800/80"
+                                      : "border-t border-slate-700 hover:bg-slate-800/30"
+                                  }
+                                >
+                                  {row.map((cell: string, cellIndex: number) => (
+                                    <td
+                                      key={cellIndex}
+                                      className={`px-4 py-3 whitespace-nowrap ${
+                                        rowIndex === 0
+                                          ? "text-cyan-400 font-semibold text-sm"
+                                          : "text-slate-300 text-sm"
+                                      }`}
+                                    >
+                                      {cell || "-"}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )
+                  )
+                ) : (
+                  <p className="text-slate-500 text-center py-8">
+                    No hay tablas disponibles
+                  </p>
+                )}
+              </TabsContent>
+
+              <TabsContent value="raw" className="mt-0">
+                <pre className="p-4 rounded-lg bg-slate-800/50 border border-slate-700 text-sm text-slate-300 whitespace-pre-wrap font-mono">
+                  {selectedDoc?.rawText || "No hay texto disponible"}
+                </pre>
+              </TabsContent>
+            </ScrollArea>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

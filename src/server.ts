@@ -52,21 +52,25 @@ app.get('/api/emails', async (req, res) => {
   }
 });
 
-// Process all pending emails
+// Process all pending emails (PARALLEL MODE)
 app.post('/api/process', async (req, res) => {
+  const totalStartTime = Date.now();
+  
   console.log('\n========================================');
   console.log('  Processing emails via API');
+  console.log('  ⚡ PARALLEL MODE');
   console.log('========================================\n');
 
   const gmailService = getGmailService();
   const textractService = getTextractService();
   const dbService = getDatabaseService();
 
-  const results: Array<{
+  let allResults: Array<{
     success: boolean;
     fileName: string;
     documentId?: string;
     error?: string;
+    duration?: number;
   }> = [];
 
   try {
@@ -89,53 +93,63 @@ app.post('/api/process', async (req, res) => {
 
     // Process each email
     for (const email of emails) {
-      console.log(`📧 Processing: ${email.subject}`);
+      const emailStartTime = Date.now();
+      console.log(`📧 Processing: ${email.subject} (${email.attachments.length} attachments)`);
       
-      // Process each attachment
-      for (const attachment of email.attachments) {
-        try {
-          console.log(`   📄 ${attachment.filename}...`);
-          
-          // Extract with Textract
-          const extractionResult = await textractService.analyzeDocumentAsync(
-            attachment.data,
-            attachment.filename,
-            attachment.mimeType
-          );
-          
-          // Save to database
-          const document = await dbService.saveExtractedDocument({
-            emailId: email.id,
-            emailSubject: email.subject,
-            emailFrom: email.from,
-            emailDate: email.date,
-            fileName: attachment.filename,
-            fileType: attachment.mimeType,
-            extractionResult,
-          });
-          
-          console.log(`   ✅ Saved with ID: ${document.id}`);
-          
-          results.push({
-            success: true,
-            fileName: attachment.filename,
-            documentId: document.id,
-          });
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-          console.error(`   ❌ Error: ${errorMsg}`);
-          results.push({
-            success: false,
-            fileName: attachment.filename,
-            error: errorMsg,
-          });
-        }
-      }
+      // ⚡ Process ALL attachments in PARALLEL
+      const emailResults = await Promise.all(
+        email.attachments.map(async (attachment, idx) => {
+          const startTime = Date.now();
+          try {
+            console.log(`   [${idx + 1}] 📄 Starting: ${attachment.filename}`);
+            
+            // Extract with Textract
+            const extractionResult = await textractService.analyzeDocumentAsync(
+              attachment.data,
+              attachment.filename,
+              attachment.mimeType
+            );
+            
+            // Save to database
+            const document = await dbService.saveExtractedDocument({
+              emailId: email.id,
+              emailSubject: email.subject,
+              emailFrom: email.from,
+              emailDate: email.date,
+              fileName: attachment.filename,
+              fileType: attachment.mimeType,
+              extractionResult,
+            });
+            
+            const duration = Date.now() - startTime;
+            console.log(`   [${idx + 1}] ✅ Done: ${attachment.filename} (${(duration / 1000).toFixed(1)}s)`);
+            
+            return {
+              success: true,
+              fileName: attachment.filename,
+              documentId: document.id,
+              duration,
+            };
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+            const duration = Date.now() - startTime;
+            console.error(`   [${idx + 1}] ❌ Error: ${attachment.filename} - ${errorMsg}`);
+            return {
+              success: false,
+              fileName: attachment.filename,
+              error: errorMsg,
+              duration,
+            };
+          }
+        })
+      );
+      
+      allResults = [...allResults, ...emailResults];
+      
+      const emailDuration = ((Date.now() - emailStartTime) / 1000).toFixed(1);
+      console.log(`   ⏱️ Email completed in ${emailDuration}s\n`);
 
       // Mark email as processed if all attachments succeeded
-      const emailResults = results.filter(r => 
-        email.attachments.some(a => a.filename === r.fileName)
-      );
       if (emailResults.every(r => r.success)) {
         await dbService.markEmailProcessed(email.id);
         await gmailService.markAsRead(email.id);
@@ -143,21 +157,24 @@ app.post('/api/process', async (req, res) => {
       }
     }
 
-    const successful = results.filter(r => r.success);
-    const failed = results.filter(r => !r.success);
+    const successful = allResults.filter(r => r.success);
+    const failed = allResults.filter(r => !r.success);
+    const totalDuration = ((Date.now() - totalStartTime) / 1000).toFixed(1);
 
     console.log('\n========================================');
     console.log(`  ✅ Completed: ${successful.length} success, ${failed.length} failed`);
+    console.log(`  ⏱️ Total time: ${totalDuration}s`);
     console.log('========================================\n');
 
     res.json({
       success: true,
       message: 'Procesamiento completado',
       emailsProcessed: emails.length,
-      documentsProcessed: results.length,
+      documentsProcessed: allResults.length,
       successful: successful.length,
       failed: failed.length,
-      results,
+      totalDuration: parseFloat(totalDuration),
+      results: allResults,
     });
 
   } catch (error) {
@@ -165,7 +182,7 @@ app.post('/api/process', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
-      results,
+      results: allResults,
     });
   }
 });
@@ -244,6 +261,56 @@ app.post('/api/documents/delete-batch', async (req, res) => {
   }
 });
 
+/**
+ * =============================================================================
+ * TODO: ENDPOINT DE CHAT CON ADK - ACTIVAR CUANDO HAYA CUOTA DE GEMINI
+ * =============================================================================
+ * 
+ * Descomentar este endpoint cuando tengas cuota de Gemini disponible:
+ * 
+ * import { runAgent } from './agent';
+ * 
+ * app.post('/api/chat', async (req, res) => {
+ *   try {
+ *     const { message } = req.body;
+ *     
+ *     if (!message) {
+ *       return res.status(400).json({ error: 'Message is required' });
+ *     }
+ *     
+ *     console.log('🤖 Processing chat message:', message);
+ *     
+ *     // Ejecutar el agente ADK con las tools configuradas
+ *     const response = await runAgent(message);
+ *     
+ *     console.log('✅ Agent response:', response.substring(0, 100) + '...');
+ *     
+ *     res.json({
+ *       message: response,
+ *       timestamp: new Date().toISOString(),
+ *     });
+ *   } catch (error) {
+ *     console.error('❌ Chat error:', error);
+ *     res.status(500).json({
+ *       error: error instanceof Error ? error.message : 'Unknown error',
+ *     });
+ *   }
+ * });
+ * 
+ * =============================================================================
+ */
+
+// Placeholder chat endpoint (sin ADK)
+app.post('/api/chat', (req, res) => {
+  const { message } = req.body;
+  
+  res.json({
+    message: `[Mock] Recibido: "${message}". ADK no disponible por cuota de Gemini.`,
+    timestamp: new Date().toISOString(),
+    adkEnabled: false,
+  });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log('========================================');
@@ -256,6 +323,7 @@ app.listen(PORT, () => {
   console.log(`  GET  /api/health    - Health check`);
   console.log(`  GET  /api/emails    - List pending emails`);
   console.log(`  POST /api/process   - Process all emails`);
+  console.log(`  POST /api/chat      - Chat with agent (TODO: ADK)`);
   console.log(`  GET  /api/stats     - Get statistics`);
   console.log(`  GET  /api/documents - Get documents`);
   console.log('========================================\n');

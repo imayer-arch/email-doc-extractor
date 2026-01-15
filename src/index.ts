@@ -146,7 +146,7 @@ async function showStats(): Promise<void> {
   const dbService = getDatabaseService();
   
   try {
-    const stats = await dbService.getStats();
+    const stats = await dbService.getExtractionStats();
     
     console.log('Extraction Statistics');
     console.log('--------------------');
