@@ -29,6 +29,7 @@
     "@aws-sdk/client-ses": "^3.969.0",
     "@aws-sdk/client-textract": "^3.500.0",
     "@google/adk": "^0.2.2",
+    "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^5.10.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.1",

@@ -179,7 +179,7 @@ export function createDocumentExtractionAgent(): LlmAgent {
   // Create the agent
   const agent = new LlmAgent({
     name: 'document_extraction_agent',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     instruction: AGENT_SYSTEM_PROMPT,
     tools: [
       checkEmailsToolDef,

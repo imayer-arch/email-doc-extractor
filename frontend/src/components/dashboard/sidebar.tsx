@@ -2,24 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { signOut, useSession } from "next-auth/react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   LayoutDashboard,
   FileText,
   MessageSquare,
-  Settings,
-  LogOut,
   Sparkles,
   Mail,
 } from "lucide-react";
@@ -44,7 +32,6 @@ const navItems = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { data: session } = useSession();
 
   return (
     <motion.aside
@@ -91,46 +78,6 @@ export function Sidebar() {
           })}
         </nav>
 
-        {/* User Section */}
-        <div className="border-t border-slate-800 p-4">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                className="w-full justify-start gap-3 px-3 py-6 hover:bg-slate-800/50"
-              >
-                <Avatar className="h-8 w-8">
-                  <AvatarImage src={session?.user?.image || ""} />
-                  <AvatarFallback className="bg-gradient-to-br from-cyan-400 to-blue-500 text-white text-sm">
-                    {session?.user?.name?.charAt(0) || "U"}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex-1 text-left">
-                  <p className="text-sm font-medium text-white truncate">
-                    {session?.user?.name || "Usuario"}
-                  </p>
-                  <p className="text-xs text-slate-500 truncate">
-                    {session?.user?.email || ""}
-                  </p>
-                </div>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56 bg-slate-900 border-slate-800">
-              <DropdownMenuItem className="text-slate-400 focus:text-white focus:bg-slate-800">
-                <Settings className="mr-2 h-4 w-4" />
-                Configuración
-              </DropdownMenuItem>
-              <DropdownMenuSeparator className="bg-slate-800" />
-              <DropdownMenuItem
-                onClick={() => signOut({ callbackUrl: "/login" })}
-                className="text-red-400 focus:text-red-400 focus:bg-red-500/10"
-              >
-                <LogOut className="mr-2 h-4 w-4" />
-                Cerrar sesión
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
       </div>
     </motion.aside>
   );

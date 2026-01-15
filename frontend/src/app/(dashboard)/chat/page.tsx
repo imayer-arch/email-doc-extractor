@@ -17,6 +17,9 @@ import {
   FileText,
   Database,
   Zap,
+  RotateCcw,
+  Bot,
+  Cpu,
 } from "lucide-react";
 import { useChatStore, ChatMessage } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -45,17 +48,17 @@ const suggestedPrompts = [
 ];
 
 export default function ChatPage() {
-  const { messages, isProcessing, addMessage, setIsProcessing, updateLastMessage } =
+  const { messages, isProcessing, suggestions, geminiStatus, addMessage, setIsProcessing, updateLastMessage, setSuggestions, setGeminiStatus, clearMessages } =
     useChatStore();
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Auto-scroll to bottom when messages change
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, suggestions]);
 
   const handleSend = async (messageText?: string) => {
     const text = messageText || input;
@@ -65,72 +68,36 @@ export default function ChatPage() {
     addMessage({ role: "user", content: text });
     setInput("");
     setIsProcessing(true);
+    setSuggestions([]); // Clear suggestions while processing
 
     // Add loading message
     addMessage({ role: "assistant", content: "", isLoading: true });
 
-    // Simulate AI response (replace with actual API call)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      // Call the real API
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
 
-    // Update with response
-    const responses: Record<string, string> = {
-      "Revisa si hay nuevos emails con adjuntos para procesar": `🔍 **Revisando bandeja de entrada...**
+      if (!response.ok) {
+        throw new Error("API error");
+      }
 
-Encontré **1 email** con adjuntos pendientes de procesar:
-
-📧 **Email:** factura personal
-- **De:** Ivan Meyer <ivanmeyer1991@gmail.com>
-- **Adjunto:** factura-personal.pdf (1.5 MB)
-- **Fecha:** Hace 30 minutos
-
-¿Quieres que procese este documento ahora?`,
-      "Procesa todos los documentos pendientes y dame un resumen": `✅ **Procesamiento completado**
-
-He procesado **1 documento** nuevo:
-
-📄 **factura-personal.pdf**
-- Tipo: Factura de servicios (Personal Flow)
-- Confianza: 79.3%
-- Datos extraídos: 65 campos
-- Tablas detectadas: 6
-
-**Datos clave encontrados:**
-- 💰 Total a pagar: $27,131.51
-- 📅 Vencimiento: 05/01/2026
-- 📱 Línea: (3492) 606992
-- 💳 Saldo a favor: $14,014.67
-
-Los datos fueron guardados en la base de datos.`,
-      "Muéstrame las estadísticas de extracción de documentos": `📊 **Estadísticas de Extracción**
-
-**Últimos 30 días:**
-- 📄 Total documentos: 24
-- ✅ Completados: 21 (87.5%)
-- ❌ Errores: 3 (12.5%)
-- 📈 Confianza promedio: 87.5%
-
-**Por tipo de documento:**
-- Facturas: 15
-- Estados de cuenta: 6
-- Comprobantes: 3
-
-**Tendencia:** +12% más documentos que el mes anterior.`,
-      default: `Entendido. Voy a procesar tu solicitud.
-
-Para ejecutar acciones, el agente ADK necesita estar activo. Actualmente hay un límite de cuota en la API de Gemini.
-
-**Estado de los servicios:**
-- ✅ Gmail API: Conectado
-- ✅ AWS Textract: Activo
-- ✅ PostgreSQL: Conectado
-- ⚠️ Google ADK: Cuota limitada
-
-¿Hay algo más en lo que pueda ayudarte?`,
-    };
-
-    const response = responses[text] || responses.default;
-    updateLastMessage(response);
-    setIsProcessing(false);
+      const data = await response.json();
+      updateLastMessage(data.message, data.suggestions || [], data.fromGemini);
+      setGeminiStatus(data.geminiStatus || null);
+    } catch (error) {
+      console.error("Chat error:", error);
+      updateLastMessage(
+        "❌ Hubo un error al procesar tu mensaje. Por favor, intenta de nuevo.",
+        ["Ayuda", "Estado del sistema"],
+        false
+      );
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -146,7 +113,7 @@ Para ejecutar acciones, el agente ADK necesita estar activo. Actualmente hay un 
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="mb-6"
+        className="mb-6 flex items-center justify-between"
       >
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-500/20 border border-cyan-500/30">
@@ -159,6 +126,17 @@ Para ejecutar acciones, el agente ADK necesita estar activo. Actualmente hay un 
             </p>
           </div>
         </div>
+        {messages.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={clearMessages}
+            className="border-slate-700 text-slate-400 hover:text-white hover:border-slate-600"
+          >
+            <RotateCcw className="h-4 w-4 mr-2" />
+            Nueva conversación
+          </Button>
+        )}
       </motion.div>
 
       {/* Chat Area */}
@@ -214,6 +192,30 @@ Para ejecutar acciones, el agente ADK necesita estar activo. Actualmente hay un 
                   <MessageBubble key={message.id} message={message} />
                 ))}
               </AnimatePresence>
+              
+              {/* Quick Replies - Sugerencias después del último mensaje */}
+              {suggestions.length > 0 && !isProcessing && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex flex-wrap gap-2 ml-11"
+                >
+                  {suggestions.map((suggestion, index) => (
+                    <motion.button
+                      key={index}
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: index * 0.05 }}
+                      onClick={() => handleSend(suggestion)}
+                      className="px-3 py-1.5 text-sm rounded-full bg-slate-800/50 border border-slate-700 text-slate-300 hover:border-cyan-500/50 hover:text-cyan-400 hover:bg-slate-800 transition-all"
+                    >
+                      {suggestion}
+                    </motion.button>
+                  ))}
+                </motion.div>
+              )}
+              {/* Scroll anchor */}
+              <div ref={messagesEndRef} />
             </div>
           )}
         </ScrollArea>
@@ -263,7 +265,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           "h-8 w-8",
           isUser
             ? "bg-slate-700"
-            : "bg-gradient-to-br from-cyan-500 to-blue-500"
+            : message.fromGemini
+              ? "bg-gradient-to-br from-purple-500 to-pink-500"
+              : "bg-gradient-to-br from-cyan-500 to-blue-500"
         )}
       >
         <AvatarFallback
@@ -273,40 +277,74 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               : "bg-transparent text-white"
           )}
         >
-          {isUser ? <User className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
+          {isUser ? (
+            <User className="h-4 w-4" />
+          ) : message.fromGemini ? (
+            <Bot className="h-4 w-4" />
+          ) : (
+            <Cpu className="h-4 w-4" />
+          )}
         </AvatarFallback>
       </Avatar>
 
-      <div
-        className={cn(
-          "max-w-[80%] rounded-2xl px-4 py-3",
-          isUser
-            ? "bg-cyan-500/20 border border-cyan-500/30"
-            : "bg-slate-800/50 border border-slate-700"
-        )}
-      >
-        {message.isLoading ? (
-          <div className="flex items-center gap-2 text-slate-400">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>Pensando...</span>
-          </div>
-        ) : (
-          <div className="text-sm text-white prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0">
-            <ReactMarkdown
-              components={{
-                p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                strong: ({ children }) => <strong className="font-semibold text-cyan-300">{children}</strong>,
-                ul: ({ children }) => <ul className="list-disc list-inside space-y-1 my-2">{children}</ul>,
-                li: ({ children }) => <li className="text-slate-300">{children}</li>,
-                h1: ({ children }) => <h1 className="text-lg font-bold text-white mb-2">{children}</h1>,
-                h2: ({ children }) => <h2 className="text-base font-bold text-white mb-2">{children}</h2>,
-                h3: ({ children }) => <h3 className="text-sm font-bold text-white mb-1">{children}</h3>,
-              }}
-            >
-              {message.content}
-            </ReactMarkdown>
+      <div className="flex flex-col gap-1 max-w-[80%]">
+        {/* Badge indicando fuente */}
+        {!isUser && !message.isLoading && (
+          <div className="flex items-center gap-1">
+            {message.fromGemini ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center gap-1">
+                <Bot className="h-2.5 w-2.5" />
+                Gemini AI
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-700/50 text-slate-400 border border-slate-600 flex items-center gap-1">
+                <Cpu className="h-2.5 w-2.5" />
+                Respuesta local
+              </span>
+            )}
           </div>
         )}
+        
+        <div
+          className={cn(
+            "rounded-2xl px-4 py-3",
+            isUser
+              ? "bg-cyan-500/20 border border-cyan-500/30"
+              : message.fromGemini
+                ? "bg-purple-900/30 border border-purple-500/30"
+                : "bg-slate-800/50 border border-slate-700"
+          )}
+        >
+          {message.isLoading ? (
+            <div className="flex items-center gap-2 text-slate-400">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Pensando...</span>
+            </div>
+          ) : (
+            <div className="text-sm text-white prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0">
+              <ReactMarkdown
+                components={{
+                  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                  strong: ({ children }) => (
+                    <strong className={cn(
+                      "font-semibold",
+                      message.fromGemini ? "text-purple-300" : "text-cyan-300"
+                    )}>
+                      {children}
+                    </strong>
+                  ),
+                  ul: ({ children }) => <ul className="list-disc list-inside space-y-1 my-2">{children}</ul>,
+                  li: ({ children }) => <li className="text-slate-300">{children}</li>,
+                  h1: ({ children }) => <h1 className="text-lg font-bold text-white mb-2">{children}</h1>,
+                  h2: ({ children }) => <h2 className="text-base font-bold text-white mb-2">{children}</h2>,
+                  h3: ({ children }) => <h3 className="text-sm font-bold text-white mb-1">{children}</h3>,
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
   );

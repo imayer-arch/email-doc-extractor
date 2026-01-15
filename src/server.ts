@@ -5,10 +5,15 @@
 
 import express from 'express';
 import cors from 'cors';
-import { getGmailService, EmailMessage, EmailAttachment } from './services/gmail.service';
+import { google } from 'googleapis';
+import { PrismaClient } from '@prisma/client';
+import { getGmailService, GmailService } from './services/gmail.service';
 import { getTextractService } from './services/textract.service';
 import { getDatabaseService } from './services/database.service';
 import { config } from './config';
+import { encrypt, decrypt } from './utils/crypto';
+
+const prisma = new PrismaClient();
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 3000;
@@ -53,15 +58,17 @@ app.get('/api/emails', async (req, res) => {
 });
 
 // Process all pending emails (PARALLEL MODE)
+// Supports multi-user: pass userId in body to use user's Gmail tokens
 app.post('/api/process', async (req, res) => {
   const totalStartTime = Date.now();
+  const { userId } = req.body;
   
   console.log('\n========================================');
   console.log('  Processing emails via API');
   console.log('  ⚡ PARALLEL MODE');
+  if (userId) console.log(`  👤 User: ${userId}`);
   console.log('========================================\n');
 
-  const gmailService = getGmailService();
   const textractService = getTextractService();
   const dbService = getDatabaseService();
 
@@ -74,6 +81,16 @@ app.post('/api/process', async (req, res) => {
   }> = [];
 
   try {
+    // Get Gmail service (user-specific or default)
+    let gmailService;
+    if (userId) {
+      // Use user's own Gmail tokens
+      gmailService = await GmailService.forUser(userId);
+    } else {
+      // Fallback to default (for backwards compatibility)
+      gmailService = getGmailService();
+    }
+
     // Get emails
     console.log('🔍 Fetching emails...');
     const emails = await gmailService.getUnreadEmailsWithAttachments();
@@ -110,7 +127,7 @@ app.post('/api/process', async (req, res) => {
               attachment.mimeType
             );
             
-            // Save to database
+            // Save to database (with userId if provided)
             const document = await dbService.saveExtractedDocument({
               emailId: email.id,
               emailSubject: email.subject,
@@ -119,6 +136,7 @@ app.post('/api/process', async (req, res) => {
               fileName: attachment.filename,
               fileType: attachment.mimeType,
               extractionResult,
+              userId,
             });
             
             const duration = Date.now() - startTime;
@@ -151,7 +169,7 @@ app.post('/api/process', async (req, res) => {
 
       // Mark email as processed if all attachments succeeded
       if (emailResults.every(r => r.success)) {
-        await dbService.markEmailProcessed(email.id);
+        await dbService.markEmailProcessed(email.id, userId);
         await gmailService.markAsRead(email.id);
         console.log(`   ✉️ Email marked as read\n`);
       }
@@ -200,14 +218,15 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// Get documents
+// Get documents (supports filtering by userId)
 app.get('/api/documents', async (req, res) => {
   try {
     const dbService = getDatabaseService();
     const limit = parseInt(req.query.limit as string) || 50;
     const status = req.query.status as string;
+    const userId = req.query.userId as string;
     
-    const documents = await dbService.getRecentDocuments(limit, status);
+    const documents = await dbService.getRecentDocuments(limit, status, userId);
     res.json(documents);
   } catch (error) {
     res.status(500).json({ 
@@ -253,6 +272,184 @@ app.post('/api/documents/delete-batch', async (req, res) => {
       message: `${result.count} document(s) deleted`,
       deletedCount: result.count,
     });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    });
+  }
+});
+
+// =============================================================================
+// Gmail OAuth Endpoints - Multi-user support
+// =============================================================================
+
+// Get or create user by email (used by frontend after OAuth login)
+app.post('/api/user/sync', async (req, res) => {
+  try {
+    const { email, name, image } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'email is required' });
+    }
+    
+    // Upsert user - create if not exists, update if exists
+    const user = await prisma.user.upsert({
+      where: { email },
+      create: {
+        email,
+        name: name || null,
+        image: image || null,
+      },
+      update: {
+        name: name || undefined,
+        image: image || undefined,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        gmailConnected: true,
+      },
+    });
+    
+    console.log(`User synced: ${email} (id: ${user.id})`);
+    res.json(user);
+  } catch (error) {
+    console.error('Error syncing user:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    });
+  }
+});
+
+// Get user info by ID
+app.get('/api/user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        gmailConnected: true,
+      },
+    });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    });
+  }
+});
+
+// Generate Gmail OAuth URL for user
+app.get('/api/auth/gmail/url', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    
+    const oauth2Client = new google.auth.OAuth2(
+      config.gmail.clientId,
+      config.gmail.clientSecret,
+      `${process.env.BACKEND_URL || 'http://localhost:3000'}/api/auth/gmail/callback`
+    );
+    
+    const url = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify',
+      ],
+      prompt: 'consent', // Force refresh token
+      state: userId as string, // Pass userId to callback
+    });
+    
+    res.json({ url });
+  } catch (error) {
+    console.error('Error generating Gmail OAuth URL:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    });
+  }
+});
+
+// Gmail OAuth callback
+app.get('/api/auth/gmail/callback', async (req, res) => {
+  try {
+    const { code, state: userId } = req.query;
+    
+    if (!code || !userId) {
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3001'}/dashboard?gmail=error&reason=missing_params`);
+    }
+    
+    const oauth2Client = new google.auth.OAuth2(
+      config.gmail.clientId,
+      config.gmail.clientSecret,
+      `${process.env.BACKEND_URL || 'http://localhost:3000'}/api/auth/gmail/callback`
+    );
+    
+    // Exchange code for tokens
+    const { tokens } = await oauth2Client.getToken(code as string);
+    
+    if (!tokens.refresh_token) {
+      console.error('No refresh token received');
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3001'}/dashboard?gmail=error&reason=no_refresh_token`);
+    }
+    
+    // Encrypt and save tokens
+    await prisma.user.update({
+      where: { id: userId as string },
+      data: {
+        gmailConnected: true,
+        gmailAccessToken: encrypt(tokens.access_token || ''),
+        gmailRefreshToken: encrypt(tokens.refresh_token),
+        gmailTokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+      },
+    });
+    
+    console.log(`Gmail connected for user: ${userId}`);
+    
+    // Redirect back to frontend
+    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3001'}/dashboard?gmail=connected`);
+  } catch (error) {
+    console.error('Gmail OAuth callback error:', error);
+    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3001'}/dashboard?gmail=error&reason=callback_failed`);
+  }
+});
+
+// Disconnect Gmail for user
+app.post('/api/auth/gmail/disconnect', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        gmailConnected: false,
+        gmailAccessToken: null,
+        gmailRefreshToken: null,
+        gmailTokenExpiry: null,
+      },
+    });
+    
+    console.log(`Gmail disconnected for user: ${userId}`);
+    
+    res.json({ success: true, message: 'Gmail disconnected' });
   } catch (error) {
     res.status(500).json({ 
       success: false,

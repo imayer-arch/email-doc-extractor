@@ -54,7 +54,7 @@ async function main() {
 
   const agent = new LlmAgent({
     name: 'test_agent',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     instruction: `You are a helpful assistant with access to tools.
 IMPORTANT: You MUST use the available tools to complete tasks.
 When asked to greet someone, use the sayHello tool.

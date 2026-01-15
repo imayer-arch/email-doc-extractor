@@ -9,6 +9,7 @@ export interface SaveDocumentData {
   fileName: string;
   fileType?: string;
   extractionResult: ExtractionResult;
+  userId?: string;
 }
 
 export class DatabaseService {
@@ -36,10 +37,11 @@ export class DatabaseService {
           tablesData: JSON.parse(JSON.stringify(data.extractionResult.tables)),
           confidence: data.extractionResult.averageConfidence,
           status: 'completed',
+          userId: data.userId,
         },
       });
 
-      console.log(`Document saved with ID: ${document.id}`);
+      console.log(`Document saved with ID: ${document.id}${data.userId ? ` for user ${data.userId}` : ''}`);
       return document;
     } catch (error) {
       console.error('Error saving document to database:', error);
@@ -100,11 +102,11 @@ export class DatabaseService {
   /**
    * Mark email as processed
    */
-  async markEmailProcessed(emailId: string): Promise<void> {
+  async markEmailProcessed(emailId: string, userId?: string): Promise<void> {
     try {
       await this.prisma.processedEmail.upsert({
         where: { emailId },
-        create: { emailId },
+        create: { emailId, userId },
         update: {},
       });
     } catch (error) {
@@ -168,8 +170,16 @@ export class DatabaseService {
   /**
    * Get recent documents
    */
-  async getRecentDocuments(limit: number = 50, status?: string): Promise<ExtractedDocument[]> {
-    const where = status && status !== 'all' ? { status } : {};
+  async getRecentDocuments(limit: number = 50, status?: string, userId?: string): Promise<ExtractedDocument[]> {
+    const where: any = {};
+    
+    if (status && status !== 'all') {
+      where.status = status;
+    }
+    
+    if (userId) {
+      where.userId = userId;
+    }
     
     return this.prisma.extractedDocument.findMany({
       where,

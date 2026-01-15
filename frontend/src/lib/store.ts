@@ -24,6 +24,7 @@ export interface ChatMessage {
   content: string;
   timestamp: Date;
   isLoading?: boolean;
+  fromGemini?: boolean;
 }
 
 export interface Stats {
@@ -56,15 +57,21 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
 interface ChatStore {
   messages: ChatMessage[];
   isProcessing: boolean;
+  suggestions: string[];
+  geminiStatus: "available" | "quota_exceeded" | "error" | null;
   addMessage: (message: Omit<ChatMessage, "id" | "timestamp">) => void;
-  updateLastMessage: (content: string) => void;
+  updateLastMessage: (content: string, suggestions?: string[], fromGemini?: boolean) => void;
   setIsProcessing: (isProcessing: boolean) => void;
+  setSuggestions: (suggestions: string[]) => void;
+  setGeminiStatus: (status: "available" | "quota_exceeded" | "error" | null) => void;
   clearMessages: () => void;
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
   messages: [],
   isProcessing: false,
+  suggestions: [],
+  geminiStatus: null,
   addMessage: (message) =>
     set((state) => ({
       messages: [
@@ -76,7 +83,7 @@ export const useChatStore = create<ChatStore>((set) => ({
         },
       ],
     })),
-  updateLastMessage: (content) =>
+  updateLastMessage: (content, suggestions, fromGemini) =>
     set((state) => {
       const messages = [...state.messages];
       if (messages.length > 0) {
@@ -84,12 +91,18 @@ export const useChatStore = create<ChatStore>((set) => ({
           ...messages[messages.length - 1],
           content,
           isLoading: false,
+          fromGemini,
         };
       }
-      return { messages };
+      return { 
+        messages,
+        suggestions: suggestions || []
+      };
     }),
   setIsProcessing: (isProcessing) => set({ isProcessing }),
-  clearMessages: () => set({ messages: [] }),
+  setSuggestions: (suggestions) => set({ suggestions }),
+  setGeminiStatus: (geminiStatus) => set({ geminiStatus }),
+  clearMessages: () => set({ messages: [], suggestions: [], geminiStatus: null }),
 }));
 
 // Stats Store

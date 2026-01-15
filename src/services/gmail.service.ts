@@ -1,6 +1,10 @@
 import { google, gmail_v1 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
+import { PrismaClient } from '@prisma/client';
 import { config } from '../config';
+import { decrypt, encrypt } from '../utils/crypto';
+
+const prisma = new PrismaClient();
 
 export interface EmailAttachment {
   filename: string;
@@ -22,19 +26,88 @@ export interface EmailMessage {
 export class GmailService {
   private oauth2Client: OAuth2Client;
   private gmail: gmail_v1.Gmail;
+  private userId?: string;
 
-  constructor() {
+  constructor(refreshToken?: string, userId?: string) {
     this.oauth2Client = new google.auth.OAuth2(
       config.gmail.clientId,
       config.gmail.clientSecret,
       config.gmail.redirectUri
     );
 
+    // Use provided token or fall back to config (for backwards compatibility)
+    const token = refreshToken || config.gmail.refreshToken;
+    
     this.oauth2Client.setCredentials({
-      refresh_token: config.gmail.refreshToken,
+      refresh_token: token,
     });
 
     this.gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
+    this.userId = userId;
+  }
+
+  /**
+   * Create a GmailService instance for a specific user
+   * Loads tokens from database and handles auto-refresh
+   */
+  static async forUser(userId: string): Promise<GmailService> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        gmailConnected: true,
+        gmailRefreshToken: true,
+        gmailAccessToken: true,
+        gmailTokenExpiry: true,
+      },
+    });
+
+    if (!user) {
+      throw new Error(`User not found: ${userId}`);
+    }
+
+    if (!user.gmailConnected || !user.gmailRefreshToken) {
+      throw new Error(`Gmail not connected for user: ${user.email}`);
+    }
+
+    // Decrypt the refresh token
+    const refreshToken = decrypt(user.gmailRefreshToken);
+    
+    const service = new GmailService(refreshToken, userId);
+
+    // Check if access token needs refresh
+    if (user.gmailTokenExpiry && new Date() >= user.gmailTokenExpiry) {
+      console.log(`Refreshing access token for user: ${user.email}`);
+      await service.refreshAccessToken();
+    }
+
+    return service;
+  }
+
+  /**
+   * Refresh the access token and update in database
+   */
+  private async refreshAccessToken(): Promise<void> {
+    try {
+      const { credentials } = await this.oauth2Client.refreshAccessToken();
+      
+      if (this.userId && credentials.access_token) {
+        await prisma.user.update({
+          where: { id: this.userId },
+          data: {
+            gmailAccessToken: encrypt(credentials.access_token),
+            gmailTokenExpiry: credentials.expiry_date 
+              ? new Date(credentials.expiry_date) 
+              : new Date(Date.now() + 3600 * 1000), // Default 1 hour
+          },
+        });
+        console.log('Access token refreshed and saved');
+      }
+    } catch (error) {
+      console.error('Error refreshing access token:', error);
+      throw error;
+    }
   }
 
   /**

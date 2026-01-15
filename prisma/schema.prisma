@@ -10,6 +10,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  name                String?
+  image               String?
+  
+  // Gmail OAuth tokens (encriptados)
+  gmailConnected      Boolean   @default(false) @map("gmail_connected")
+  gmailAccessToken    String?   @map("gmail_access_token")
+  gmailRefreshToken   String?   @map("gmail_refresh_token")
+  gmailTokenExpiry    DateTime? @map("gmail_token_expiry")
+  
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+  
+  documents           ExtractedDocument[]
+  processedEmails     ProcessedEmail[]
+  
+  @@map("users")
+}
+
 model ExtractedDocument {
   id             String   @id @default(uuid())
   emailId        String   @map("email_id")
@@ -28,11 +49,16 @@ model ExtractedDocument {
   notifiedAt     DateTime? @map("notified_at")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
+  
+  // Relación con usuario
+  userId         String?  @map("user_id")
+  user           User?    @relation(fields: [userId], references: [id])
 
   @@map("extracted_documents")
   @@index([emailId])
   @@index([status])
   @@index([extractedAt])
+  @@index([userId])
 }
 
 model ProcessedEmail {
@@ -40,5 +66,10 @@ model ProcessedEmail {
   emailId     String   @unique @map("email_id")
   processedAt DateTime @default(now()) @map("processed_at")
   
+  // Relación con usuario
+  userId      String?  @map("user_id")
+  user        User?    @relation(fields: [userId], references: [id])
+  
   @@map("processed_emails")
+  @@index([userId])
 }

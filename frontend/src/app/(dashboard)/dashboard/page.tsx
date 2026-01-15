@@ -4,6 +4,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { StatsCard } from "@/components/dashboard/stats-card";
 import { RecentDocuments } from "@/components/dashboard/recent-documents";
+import { GmailConnection } from "@/components/dashboard/gmail-connection";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,17 +36,27 @@ import {
   Table as TableIcon,
   FileCode,
 } from "lucide-react";
-import { useDocuments, useStats, useTriggerProcess } from "@/lib/api";
+import { useDocuments, useStatsWithPolling, useTriggerProcess } from "@/lib/api";
+import { useUser } from "@/lib/useUser";
 import { ExtractedDocument } from "@/lib/store";
 
+// Polling interval while processing (2 seconds)
+const POLLING_INTERVAL = 2000;
+
 export default function DashboardPage() {
+  const { userId, gmailConnected } = useUser();
   const [selectedDoc, setSelectedDoc] = useState<ExtractedDocument | null>(null);
-  const { data: documents, isLoading: docsLoading } = useDocuments();
-  const { data: stats, isLoading: statsLoading } = useStats();
   const { mutate: triggerProcess, isPending: isProcessing } = useTriggerProcess();
+  
+  // Enable polling while processing to show real-time updates
+  const pollingInterval = isProcessing ? POLLING_INTERVAL : false;
+  
+  const { data: documents, isLoading: docsLoading } = useDocuments(userId, undefined, pollingInterval);
+  const { data: stats, isLoading: statsLoading } = useStatsWithPolling(pollingInterval);
 
   const handleProcess = () => {
-    triggerProcess();
+    // Pass userId to process user's own emails
+    triggerProcess(userId);
   };
 
   return (
@@ -63,10 +74,19 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {!gmailConnected && (
+            <span className="text-sm text-yellow-400">
+              Conecta Gmail primero →
+            </span>
+          )}
           <Button
             onClick={handleProcess}
-            disabled={isProcessing}
-            className="bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white shadow-lg shadow-cyan-500/20"
+            disabled={isProcessing || !gmailConnected}
+            className={gmailConnected 
+              ? "bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white shadow-lg shadow-cyan-500/20"
+              : "bg-slate-700 text-slate-400 cursor-not-allowed"
+            }
+            title={!gmailConnected ? "Primero conecta tu Gmail en el panel derecho" : ""}
           >
             {isProcessing ? (
               <>
@@ -156,47 +176,8 @@ export default function DashboardPage() {
 
         {/* Quick Actions & Status */}
         <div className="space-y-6">
-          {/* Agent Status */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, delay: 0.4 }}
-          >
-            <Card className="bg-slate-900/50 backdrop-blur-xl border-slate-800">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg font-semibold text-white flex items-center gap-2">
-                  <Sparkles className="h-5 w-5 text-cyan-400" />
-                  Estado del Agente
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-400">Google ADK</span>
-                  <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">
-                    Cuota limitada
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-400">AWS Textract</span>
-                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
-                    Activo
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-400">Gmail API</span>
-                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
-                    Conectado
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-400">PostgreSQL</span>
-                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
-                    Conectado
-                  </Badge>
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
+          {/* Gmail Connection */}
+          <GmailConnection />
 
           {/* Quick Tips */}
           <motion.div
