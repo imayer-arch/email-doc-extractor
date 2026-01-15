@@ -300,8 +300,9 @@ export class GmailService {
   /**
    * Mark email as read
    */
-  async markAsRead(messageId: string): Promise<void> {
+  async markAsRead(messageId: string): Promise<boolean> {
     try {
+      console.log(`    [markAsRead] Attempting to mark ${messageId} as read...`);
       await this.gmail.users.messages.modify({
         userId: 'me',
         id: messageId,
@@ -309,9 +310,16 @@ export class GmailService {
           removeLabelIds: ['UNREAD'],
         },
       });
-    } catch (error) {
-      console.error(`Error marking email ${messageId} as read:`, error);
-      throw error;
+      console.log(`    [markAsRead] SUCCESS - ${messageId} marked as read`);
+      return true;
+    } catch (error: any) {
+      console.error(`    [markAsRead] FAILED for ${messageId}:`);
+      console.error(`    Error code: ${error?.code}`);
+      console.error(`    Error message: ${error?.message}`);
+      if (error?.code === 403) {
+        console.error(`    >>> PERMISSION DENIED - User needs to reconnect Gmail with modify scope <<<`);
+      }
+      return false;
     }
   }
 

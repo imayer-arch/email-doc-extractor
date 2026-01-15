@@ -28,14 +28,29 @@ Agente de IA que monitorea Gmail, extrae datos de documentos adjuntos usando AWS
 │   (Next.js)     │     │   (Express)     │     │                 │
 │   :3001         │     │   :3000         │     │                 │
 └─────────────────┘     └────────┬────────┘     └─────────────────┘
-                                 │
-                    ┌────────────┼────────────┐
-                    ▼            ▼            ▼
-              ┌──────────┐ ┌──────────┐ ┌──────────┐
-              │ Gmail    │ │ AWS S3   │ │ Textract │
-              │ API      │ │          │ │          │
-              └──────────┘ └──────────┘ └──────────┘
+                                │
+                   ┌────────────┼────────────┐
+                   ▼            ▼            ▼
+             ┌──────────┐ ┌──────────┐ ┌──────────┐
+             │ Gmail    │ │ AWS S3   │ │ Textract │
+             │ API      │ │          │ │          │
+             └──────────┘ └──────────┘ └──────────┘
+                   │
+                   ▼
+             ┌──────────┐     ┌──────────┐
+             │ Pub/Sub  │────▶│ Webhook  │  (Push notifications)
+             │ (GCP)    │     │ /api/... │
+             └──────────┘     └──────────┘
 ```
+
+### Procesamiento Automático (Gmail Push)
+
+El sistema soporta **procesamiento automático** de emails usando Gmail Push Notifications:
+
+1. **Gmail Watch API** registra una "watch" en el inbox del usuario
+2. **Google Cloud Pub/Sub** recibe notificaciones cuando llegan nuevos emails
+3. **Webhook** (`/api/webhook/gmail`) procesa automáticamente los adjuntos
+4. **Triple protección** contra duplicados (lock en memoria + check en DB + marca inmediata)
 
 ## Requisitos Previos
 
@@ -45,6 +60,7 @@ Agente de IA que monitorea Gmail, extrae datos de documentos adjuntos usando AWS
 4. Proyecto en Google Cloud Console con Gmail API habilitada
 5. Credenciales OAuth2 de Google
 6. API Key de Google AI (Gemini) - para el agente ADK
+7. Google Cloud Pub/Sub configurado (para procesamiento automático)
 
 ## Instalación
 
@@ -155,6 +171,7 @@ npm start            # Iniciar build de producción
 
 ## Endpoints del Backend API
 
+### Core
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
 | GET | `/api/health` | Health check |
@@ -165,7 +182,16 @@ npm start            # Iniciar build de producción
 | GET | `/api/documents/:id` | Obtener detalle de documento |
 | DELETE | `/api/documents/:id` | Eliminar documento |
 | POST | `/api/documents/delete-batch` | Eliminar múltiples documentos |
-| POST | `/api/chat` | Chat con agente ADK (TODO: activar cuando haya cuota) |
+| POST | `/api/chat` | Chat con agente ADK |
+
+### Gmail Push (Procesamiento Automático)
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| POST | `/api/webhook/gmail` | Webhook para Pub/Sub (llamado por Google) |
+| POST | `/api/gmail/watch/start` | Iniciar watch en Gmail |
+| POST | `/api/gmail/watch/stop` | Detener watch |
+| GET | `/api/gmail/watch/status` | Ver estado del watch |
+| POST | `/api/gmail/watch/renew-all` | Renovar watches que expiran |
 
 ## Estructura del Proyecto
 
@@ -173,7 +199,12 @@ npm start            # Iniciar build de producción
 ├── src/                       # Backend
 │   ├── agent/                 # Agente ADK y prompts
 │   ├── tools/                 # Tools del agente (Gmail, Textract, DB)
-│   ├── services/              # Servicios (Gmail, Textract, Email, DB)
+│   ├── services/              # Servicios
+│   │   ├── gmail.service.ts         # Gmail API
+│   │   ├── gmail-watch.service.ts   # Gmail Watch (Push)
+│   │   ├── email-processor.service.ts # Procesador de emails
+│   │   ├── textract.service.ts      # AWS Textract
+│   │   └── database.service.ts      # PostgreSQL
 │   ├── scripts/               # Scripts utilitarios
 │   ├── config/                # Configuración
 │   ├── server.ts              # Express API server
@@ -186,6 +217,9 @@ npm start            # Iniciar build de producción
 │   │   └── lib/               # Utilidades, stores, API client
 │   └── ...
 │
+├── docs/                      # Documentación
+│   └── GMAIL_PUSH_SETUP.md    # Setup de Gmail Push
+│
 ├── prisma/
 │   └── schema.prisma          # Schema de la BD
 └── ...
@@ -193,6 +227,7 @@ npm start            # Iniciar build de producción
 
 ## Flujo de Procesamiento
 
+### Procesamiento Manual
 1. **Usuario** hace clic en "Procesar Emails" en la UI
 2. **Frontend** llama a `POST /api/process` del backend
 3. **Backend** consulta Gmail API por emails no leídos con adjuntos
@@ -204,11 +239,24 @@ npm start            # Iniciar build de producción
 5. Marca el email como leído
 6. **Frontend** actualiza automáticamente la lista de documentos
 
+### Procesamiento Automático (Gmail Push)
+1. **Usuario** conecta Gmail (OAuth) → se activa automáticamente el watch
+2. **Gmail** detecta nuevo email → notifica a **Pub/Sub**
+3. **Pub/Sub** envía POST al webhook `/api/webhook/gmail`
+4. **Backend** procesa automáticamente:
+   - Verifica si el email ya fue procesado (triple protección)
+   - Extrae adjuntos con Textract
+   - Guarda en PostgreSQL
+   - Marca email como leído
+5. **Frontend** muestra nuevos documentos (auto-refresh cada 30s)
+
+> Ver `docs/GMAIL_PUSH_SETUP.md` para configuración detallada de Pub/Sub.
+
 ## TODOs
 
-- [ ] **Agente ADK**: Actualmente limitado por cuota de Gemini. Cuando se restablezca, descomentar el código en `src/server.ts` endpoint `/api/chat` y `frontend/src/app/api/chat/route.ts`
+- [x] ~~Procesamiento automático con Gmail Push~~
 - [ ] Notificaciones por email (AWS SES configurado pero pendiente de verificar identidades)
-- [ ] Procesamiento automático con cron/scheduler
+- [ ] Deploy a producción (Railway/Render)
 
 ## Licencia
 

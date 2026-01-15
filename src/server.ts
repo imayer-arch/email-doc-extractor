@@ -10,6 +10,8 @@ import { PrismaClient } from '@prisma/client';
 import { getGmailService, GmailService } from './services/gmail.service';
 import { getTextractService } from './services/textract.service';
 import { getDatabaseService } from './services/database.service';
+import { getGmailWatchService, GmailNotification } from './services/gmail-watch.service';
+import { getEmailProcessorService } from './services/email-processor.service';
 import { config } from './config';
 import { encrypt, decrypt } from './utils/crypto';
 
@@ -420,6 +422,16 @@ app.get('/api/auth/gmail/callback', async (req, res) => {
     
     console.log(`Gmail connected for user: ${userId}`);
     
+    // Automatically start watching for new emails (Push notifications)
+    try {
+      const watchService = getGmailWatchService();
+      await watchService.startWatch(userId as string);
+      console.log(`Gmail watch started for user: ${userId}`);
+    } catch (watchError) {
+      // Don't fail the OAuth flow if watch fails - user can retry later
+      console.error(`Failed to start Gmail watch for user ${userId}:`, watchError);
+    }
+    
     // Redirect back to frontend
     res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3001'}/dashboard?gmail=connected`);
   } catch (error) {
@@ -437,6 +449,10 @@ app.post('/api/auth/gmail/disconnect', async (req, res) => {
       return res.status(400).json({ error: 'userId is required' });
     }
     
+    // Stop watch before disconnecting
+    const watchService = getGmailWatchService();
+    await watchService.stopWatch(userId);
+    
     await prisma.user.update({
       where: { id: userId },
       data: {
@@ -444,6 +460,8 @@ app.post('/api/auth/gmail/disconnect', async (req, res) => {
         gmailAccessToken: null,
         gmailRefreshToken: null,
         gmailTokenExpiry: null,
+        gmailHistoryId: null,
+        gmailWatchExpiry: null,
       },
     });
     
@@ -454,6 +472,183 @@ app.post('/api/auth/gmail/disconnect', async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error' 
+    });
+  }
+});
+
+// =============================================================================
+// Gmail Push Notifications (Pub/Sub Webhook)
+// =============================================================================
+
+/**
+ * Webhook endpoint for Gmail Pub/Sub notifications
+ * This is called by Google Cloud Pub/Sub when a new email arrives
+ */
+app.post('/api/webhook/gmail', async (req, res) => {
+  console.log('\n>>> WEBHOOK HIT <<<');
+  const startTime = Date.now();
+  
+  try {
+    // Respond quickly - Pub/Sub requires response within 10 seconds
+    // We acknowledge receipt and process async
+    res.status(200).send('OK');
+    
+    // Decode Pub/Sub message
+    const message = req.body.message;
+    if (!message?.data) {
+      console.log('[Webhook] No message data received');
+      return;
+    }
+    
+    // Decode base64 data
+    const dataStr = Buffer.from(message.data, 'base64').toString('utf-8');
+    console.log('[Webhook] Raw data:', dataStr);
+    const notification: GmailNotification = JSON.parse(dataStr);
+    
+    console.log('\n========================================');
+    console.log('  Gmail Push Notification Received');
+    console.log('========================================');
+    console.log(`  Email: ${notification.emailAddress}`);
+    console.log(`  HistoryId: ${notification.historyId}`);
+    console.log(`  MessageId: ${message.messageId || 'N/A'}`);
+    console.log('========================================\n');
+    
+    // Process new emails
+    console.log('[Webhook] Starting email processing...');
+    const processor = getEmailProcessorService();
+    const result = await processor.processNewEmails(notification);
+    console.log('[Webhook] Processing result:', JSON.stringify(result, null, 2));
+    
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`[Webhook] Completed in ${duration}s`);
+    console.log(`  Messages: ${result.messagesProcessed}`);
+    console.log(`  Documents: ${result.documentsExtracted}`);
+    console.log(`  Errors: ${result.errors.length}`);
+    
+  } catch (error) {
+    console.error('[Webhook] Error processing notification:', error);
+  }
+});
+
+// =============================================================================
+// Gmail Watch Management Endpoints
+// =============================================================================
+
+/**
+ * Start watching Gmail for a user
+ * This sets up push notifications for new emails
+ */
+app.post('/api/gmail/watch/start', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    
+    const watchService = getGmailWatchService();
+    const result = await watchService.startWatch(userId);
+    
+    res.json({
+      success: true,
+      message: 'Gmail watch started',
+      historyId: result.historyId,
+      expiresAt: new Date(parseInt(result.expiration)).toISOString(),
+    });
+  } catch (error) {
+    console.error('Error starting Gmail watch:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Stop watching Gmail for a user
+ */
+app.post('/api/gmail/watch/stop', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    
+    const watchService = getGmailWatchService();
+    await watchService.stopWatch(userId);
+    
+    res.json({
+      success: true,
+      message: 'Gmail watch stopped',
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Get watch status for a user
+ */
+app.get('/api/gmail/watch/status', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    
+    const watchService = getGmailWatchService();
+    const status = await watchService.getWatchStatus(userId as string);
+    
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Renew expiring watches
+ * Should be called periodically via cron job
+ */
+app.post('/api/gmail/watch/renew-all', async (req, res) => {
+  try {
+    const watchService = getGmailWatchService();
+    const result = await watchService.renewExpiringWatches(24); // Renew if expiring within 24h
+    
+    res.json({
+      success: true,
+      renewed: result.renewed,
+      errors: result.errors,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * Get all active watches (admin)
+ */
+app.get('/api/gmail/watch/list', async (req, res) => {
+  try {
+    const watchService = getGmailWatchService();
+    const watches = await watchService.getActiveWatches();
+    
+    res.json({
+      count: watches.length,
+      watches,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 });
@@ -508,6 +703,49 @@ app.post('/api/chat', (req, res) => {
   });
 });
 
+// =============================================================================
+// Watch Renewal Job
+// =============================================================================
+
+// Interval for watch renewal check (every 12 hours)
+const WATCH_RENEWAL_INTERVAL = 12 * 60 * 60 * 1000;
+let renewalInterval: NodeJS.Timeout | null = null;
+
+/**
+ * Start the automatic watch renewal job
+ * This ensures watches don't expire (they expire after 7 days)
+ */
+function startWatchRenewalJob(): void {
+  if (renewalInterval) {
+    clearInterval(renewalInterval);
+  }
+  
+  console.log('[WatchRenewal] Starting automatic renewal job (every 12h)');
+  
+  renewalInterval = setInterval(async () => {
+    console.log('[WatchRenewal] Running scheduled renewal check...');
+    try {
+      const watchService = getGmailWatchService();
+      const result = await watchService.renewExpiringWatches(48); // Renew if expiring within 48h
+      console.log(`[WatchRenewal] Renewed ${result.renewed} watches, ${result.errors.length} errors`);
+    } catch (error) {
+      console.error('[WatchRenewal] Error:', error);
+    }
+  }, WATCH_RENEWAL_INTERVAL);
+  
+  // Run immediately on startup after a short delay
+  setTimeout(async () => {
+    console.log('[WatchRenewal] Running initial renewal check...');
+    try {
+      const watchService = getGmailWatchService();
+      const result = await watchService.renewExpiringWatches(48);
+      console.log(`[WatchRenewal] Initial check: ${result.renewed} renewed, ${result.errors.length} errors`);
+    } catch (error) {
+      console.error('[WatchRenewal] Initial check error:', error);
+    }
+  }, 5000); // Wait 5 seconds after startup
+}
+
 // Start server
 app.listen(PORT, () => {
   console.log('========================================');
@@ -515,13 +753,23 @@ app.listen(PORT, () => {
   console.log('========================================');
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📧 Gmail: ${config.gmail.userEmail}`);
+  console.log(`☁️ Pub/Sub: ${config.pubsub.topicPath || 'Not configured'}`);
   console.log('');
-  console.log('Endpoints:');
-  console.log(`  GET  /api/health    - Health check`);
-  console.log(`  GET  /api/emails    - List pending emails`);
-  console.log(`  POST /api/process   - Process all emails`);
-  console.log(`  POST /api/chat      - Chat with agent (TODO: ADK)`);
-  console.log(`  GET  /api/stats     - Get statistics`);
-  console.log(`  GET  /api/documents - Get documents`);
+  console.log('Core Endpoints:');
+  console.log(`  GET  /api/health       - Health check`);
+  console.log(`  GET  /api/emails       - List pending emails`);
+  console.log(`  POST /api/process      - Process all emails`);
+  console.log(`  GET  /api/stats        - Get statistics`);
+  console.log(`  GET  /api/documents    - Get documents`);
+  console.log('');
+  console.log('Gmail Push (Pub/Sub):');
+  console.log(`  POST /api/webhook/gmail        - Pub/Sub webhook`);
+  console.log(`  POST /api/gmail/watch/start    - Start watching`);
+  console.log(`  POST /api/gmail/watch/stop     - Stop watching`);
+  console.log(`  GET  /api/gmail/watch/status   - Get watch status`);
+  console.log(`  POST /api/gmail/watch/renew-all - Renew all watches`);
   console.log('========================================\n');
+  
+  // Start the automatic watch renewal job
+  startWatchRenewalJob();
 });

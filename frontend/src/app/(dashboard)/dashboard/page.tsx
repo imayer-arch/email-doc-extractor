@@ -35,21 +35,23 @@ import {
   KeyRound,
   Table as TableIcon,
   FileCode,
+  Radio,
 } from "lucide-react";
 import { useDocuments, useStatsWithPolling, useTriggerProcess } from "@/lib/api";
 import { useUser } from "@/lib/useUser";
 import { ExtractedDocument } from "@/lib/store";
 
-// Polling interval while processing (2 seconds)
-const POLLING_INTERVAL = 2000;
+// Polling intervals
+const PROCESSING_POLL_INTERVAL = 2000;  // 2 seconds while processing
+const AUTO_POLL_INTERVAL = 30000;       // 30 seconds for auto-refresh
 
 export default function DashboardPage() {
   const { userId, gmailConnected } = useUser();
   const [selectedDoc, setSelectedDoc] = useState<ExtractedDocument | null>(null);
   const { mutate: triggerProcess, isPending: isProcessing } = useTriggerProcess();
   
-  // Enable polling while processing to show real-time updates
-  const pollingInterval = isProcessing ? POLLING_INTERVAL : false;
+  // Enable faster polling while processing, otherwise poll every 30s for new documents
+  const pollingInterval = isProcessing ? PROCESSING_POLL_INTERVAL : AUTO_POLL_INTERVAL;
   
   const { data: documents, isLoading: docsLoading } = useDocuments(userId, undefined, pollingInterval);
   const { data: stats, isLoading: statsLoading } = useStatsWithPolling(pollingInterval);
@@ -69,9 +71,17 @@ export default function DashboardPage() {
       >
         <div>
           <h1 className="text-3xl font-bold text-white">Dashboard</h1>
-          <p className="text-slate-400 mt-1">
-            Monitorea y gestiona la extracción de documentos
-          </p>
+          <div className="flex items-center gap-3 mt-1">
+            <p className="text-slate-400">
+              Monitorea y gestiona la extracción de documentos
+            </p>
+            {gmailConnected && (
+              <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">
+                <Radio className="h-3 w-3 mr-1 animate-pulse" />
+                Auto-refresh activo
+              </Badge>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-3">
           {!gmailConnected && (

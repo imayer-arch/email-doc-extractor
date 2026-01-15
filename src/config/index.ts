@@ -51,6 +51,22 @@ export const config = {
     // ADK looks for GOOGLE_GENAI_API_KEY or GEMINI_API_KEY
     googleApiKey: process.env.GOOGLE_GENAI_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '',
   },
+
+  // Gmail Push Notifications (Pub/Sub)
+  pubsub: {
+    projectId: process.env.GOOGLE_CLOUD_PROJECT_ID || '',
+    topicName: process.env.PUBSUB_TOPIC_NAME || 'gmail-notifications',
+    // Full topic path: projects/{projectId}/topics/{topicName}
+    get topicPath() {
+      return `projects/${this.projectId}/topics/${this.topicName}`;
+    },
+  },
+
+  // Server settings
+  server: {
+    backendUrl: process.env.BACKEND_URL || 'http://localhost:3000',
+    port: parseInt(process.env.BACKEND_PORT || '3000', 10),
+  },
 } as const;
 
 // Validate required configuration
